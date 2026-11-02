@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Retrodeck</title>
+  <meta name="description" content="A tape-deck style Spotify player.">
+  <meta name="theme-color" content="#CDD3D9">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&family=VT323&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- ======================= Sign-in screen ======================= -->
+  <main id="gate" class="gate" hidden>
+    <section class="gate-card slab">
+      <h1 class="wordmark wordmark--big">Retrodeck</h1>
+      <p class="gate-lede">Your Spotify library on a tape deck.</p>
+      <div id="gate-setup" class="gate-setup" hidden>
+        <p><strong>Add your Spotify Client ID first.</strong></p>
+        <p>Open <code>js/config.js</code>, paste the Client ID from your Spotify developer dashboard, and add this page's address as a Redirect URI there:</p>
+        <p class="gate-uri"><code id="gate-redirect"></code></p>
+      </div>
+      <button id="btn-login" class="key key--wide key--hot" type="button">Sign in with Spotify</button>
+      <p class="gate-fine">Playing music here needs Spotify Premium.</p>
+      <p id="gate-error" class="gate-error" role="alert" hidden></p>
+      <a class="gate-demo" href="?demo=1">Try the demo without signing in</a>
+    </section>
+  </main>
+
+  <!-- ========================= Player app ========================= -->
+  <div id="app" class="app" hidden>
+    <header class="topbar">
+      <span class="wordmark">Retrodeck</span>
+      <div class="topbar-right">
+        <span id="who" class="who"></span>
+        <button id="btn-theme" class="chip" type="button" aria-label="Switch theme">Dark</button>
+        <button id="btn-logout" class="chip" type="button">Sign out</button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <!-- ---------------- Deck ---------------- -->
+      <section class="deck slab" aria-label="Player">
+        <div class="cassette-wrap">
+          <svg id="cassette" class="cassette" viewBox="0 0 400 252" role="img" aria-labelledby="cassette-title">
+            <title id="cassette-title">Cassette</title>
+            <defs>
+              <clipPath id="label-clip"><rect x="26" y="20" width="348" height="156"/></clipPath>
+              <clipPath id="window-clip"><rect x="104" y="86" width="192" height="58"/></clipPath>
+              <pattern id="stripes" width="16" height="16" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+                <rect width="16" height="16" class="c-label-fill"/>
+                <rect width="8" height="16" class="c-stripe"/>
+              </pattern>
+            </defs>
+            <!-- shell -->
+            <rect x="4" y="4" width="392" height="244" class="c-shell"/>
+            <circle cx="16" cy="16" r="4" class="c-screw"/><circle cx="384" cy="16" r="4" class="c-screw"/>
+            <circle cx="16" cy="236" r="4" class="c-screw"/><circle cx="384" cy="236" r="4" class="c-screw"/>
+            <!-- label (J-card) with album art -->
+            <g clip-path="url(#label-clip)">
+              <rect x="26" y="20" width="348" height="156" fill="url(#stripes)"/>
+              <image id="c-art" x="26" y="20" width="348" height="156" preserveAspectRatio="xMidYMid slice" href=""/>
+            </g>
+            <rect x="26" y="20" width="348" height="156" class="c-outline"/>
+            <rect x="38" y="30" width="324" height="30" class="c-strip"/>
+            <text id="c-title" x="48" y="51" class="c-title">Insert a tape</text>
+            <text id="c-side" x="352" y="51" class="c-side" text-anchor="end">A</text>
+            <!-- window + reels -->
+            <rect x="104" y="86" width="192" height="58" class="c-window"/>
+            <g clip-path="url(#window-clip)">
+              <circle id="tape-l" cx="152" cy="115" r="34" class="c-tape"/>
+              <circle id="tape-r" cx="248" cy="115" r="14" class="c-tape"/>
+            </g>
+            <g class="reel reel-l"><circle cx="152" cy="115" r="12" class="c-hub"/>
+              <path d="M152 105v6M152 119v6M143.3 110l5.2 3M151.5 117l5.2 3M160.7 110l-5.2 3M152.5 117l-5.2 3" class="c-teeth"/></g>
+            <g class="reel reel-r"><circle cx="248" cy="115" r="12" class="c-hub"/>
+              <path d="M248 105v6M248 119v6M239.3 110l5.2 3M247.5 117l5.2 3M256.7 110l-5.2 3M248.5 117l-5.2 3" class="c-teeth"/></g>
+            <rect x="104" y="86" width="192" height="58" class="c-outline"/>
+            <!-- bottom trapezoid -->
+            <path d="M90 248 L108 196 H292 L310 248" class="c-trap"/>
+            <circle cx="138" cy="226" r="7" class="c-hole"/><circle cx="262" cy="226" r="7" class="c-hole"/>
+            <rect x="186" y="214" width="28" height="18" class="c-hole"/>
+          </svg>
+        </div>
+
+        <!-- LCD readout -->
+        <div class="lcd" aria-live="polite">
+          <div class="lcd-row lcd-row--title"><span id="lcd-title" class="lcd-scroll">No tape</span></div>
+          <div class="lcd-row lcd-row--meta">
+            <span id="lcd-artist" class="lcd-artist">Pick something from your crate</span>
+          </div>
+          <div class="lcd-row lcd-row--time">
+            <span id="lcd-state" class="lcd-state">STOP</span>
+            <span><span id="lcd-pos">00:00</span> / <span id="lcd-dur">00:00</span></span>
+          </div>
+        </div>
+
+        <label class="seek">
+          <span class="visually-hidden">Position</span>
+          <input id="seek" type="range" min="0" max="1000" value="0" step="1" disabled>
+        </label>
+
+        <div class="transport" role="group" aria-label="Transport">
+          <button id="btn-shuffle" class="key key--small" type="button" aria-pressed="false" title="Shuffle">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h4l10 10h4M3 17h4l3-3M14 10l3-3h4M18 4l3 3-3 3M18 14l3 3-3 3"/></svg>
+            <span class="visually-hidden">Shuffle</span></button>
+          <button id="btn-prev" class="key" type="button" title="Previous">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14M19 5 9 12l10 7z" class="fill"/></svg>
+            <span class="visually-hidden">Previous</span></button>
+          <button id="btn-play" class="key key--hot key--play" type="button" title="Play">
+            <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v16l13-8z" class="fill"/></svg>
+            <svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z" class="fill"/></svg>
+            <span id="play-label" class="visually-hidden">Play</span></button>
+          <button id="btn-next" class="key" type="button" title="Next">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5v14M5 5l10 7-10 7z" class="fill"/></svg>
+            <span class="visually-hidden">Next</span></button>
+          <button id="btn-repeat" class="key key--small" type="button" aria-pressed="false" title="Repeat: off">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11V8a2 2 0 0 1 2-2h13l-3-3M20 13v3a2 2 0 0 1-2 2H5l3 3"/></svg>
+            <span id="repeat-one" class="key-badge" hidden>1</span>
+            <span class="visually-hidden">Repeat</span></button>
+        </div>
+
+        <div class="deck-foot">
+          <button id="btn-heart" class="chip chip--heart" type="button" aria-pressed="false" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/></svg>
+            <span id="heart-label">Like</span></button>
+          <label class="fader">
+            <span class="fader-label">Vol</span>
+            <input id="volume" type="range" min="0" max="100" value="60" aria-label="Volume">
+          </label>
+          <div class="speaker">
+            <button id="btn-speaker" class="chip" type="button" aria-haspopup="true" aria-expanded="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9zM16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/></svg>
+              <span id="speaker-name">No speaker</span></button>
+            <div id="speaker-menu" class="speaker-menu slab" hidden>
+              <p class="menu-head">Play on</p>
+              <ul id="device-list"></ul>
+              <button id="btn-devices-refresh" class="link-btn" type="button">Refresh list</button>
+            </div>
+          </div>
+        </div>
+
+        <p class="attribution">
+          Music and metadata from Spotify.
+          <a id="open-spotify" href="https://open.spotify.com" target="_blank" rel="noopener">Open in Spotify</a>
+        </p>
+      </section>
+
+      <!-- ---------------- Crate (library) ---------------- -->
+      <section class="crate slab" aria-label="Library">
+        <div class="tabs" role="tablist">
+          <button class="tab" role="tab" data-view="liked" aria-selected="true">Liked</button>
+          <button class="tab" role="tab" data-view="playlists" aria-selected="false">Playlists</button>
+          <button class="tab" role="tab" data-view="search" aria-selected="false">Search</button>
+        </div>
+        <form id="search-form" class="search" hidden>
+          <label class="visually-hidden" for="search-input">Search tracks</label>
+          <input id="search-input" type="search" placeholder="Artist, song, album" autocomplete="off">
+          <button class="key key--small key--go" type="submit">Find</button>
+        </form>
+        <div id="crate-head" class="crate-head" hidden>
+          <button id="btn-back" class="link-btn" type="button">Back to playlists</button>
+          <div class="crate-title-row">
+            <h2 id="crate-title" class="crate-title"></h2>
+            <button id="btn-play-all" class="chip" type="button">Play all</button>
+          </div>
+          <p id="crate-note" class="crate-note" hidden></p>
+        </div>
+        <ol id="list" class="list"></ol>
+        <div id="list-status" class="list-status"></div>
+        <button id="btn-more" class="chip chip--more" type="button" hidden>Load more</button>
+      </section>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
