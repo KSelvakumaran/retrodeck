@@ -38,6 +38,9 @@
       <span class="wordmark">Retrodeck</span>
       <div class="topbar-right">
         <span id="who" class="who"></span>
+        <button id="btn-browse" class="chip chip--browse" type="button" aria-controls="crate" aria-expanded="false" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+          Browse</button>
         <button id="btn-theme" class="chip" type="button" aria-label="Switch theme">Dark</button>
         <button id="btn-logout" class="chip" type="button">Sign out</button>
       </div>
@@ -145,39 +148,41 @@
           </div>
         </div>
 
+        <button id="btn-browse-deck" class="key key--wide deck-browse" type="button" aria-controls="crate" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+          Browse</button>
+
         <p class="attribution">
           Music and metadata from Spotify.
           <a id="open-spotify" href="https://open.spotify.com" target="_blank" rel="noopener">Open in Spotify</a>
         </p>
       </section>
 
-      <!-- ---------------- Crate (library) ---------------- -->
-      <section class="crate slab" aria-label="Library">
-        <div class="tabs" role="tablist">
-          <button class="tab" role="tab" data-view="liked" aria-selected="true">Liked</button>
-          <button class="tab" role="tab" data-view="playlists" aria-selected="false">Playlists</button>
-          <button class="tab" role="tab" data-view="search" aria-selected="false">Search</button>
+      <!-- ---------------- Crate (library) ----------------
+           Inline next to the deck until something plays, then a slide-out menu. -->
+      <section id="crate" class="crate slab" aria-label="Library">
+        <div class="crate-bar">
+          <div class="tabs" role="tablist">
+            <button class="tab" role="tab" data-view="home" aria-selected="true">Home</button>
+            <button class="tab" role="tab" data-view="liked" aria-selected="false">Liked</button>
+            <button class="tab" role="tab" data-view="playlists" aria-selected="false">Playlists</button>
+            <button class="tab" role="tab" data-view="search" aria-selected="false">Search</button>
+          </div>
+          <button id="btn-close-crate" class="crate-close" type="button" aria-label="Close menu">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
         </div>
         <form id="search-form" class="search" hidden>
-          <label class="visually-hidden" for="search-input">Search tracks</label>
-          <input id="search-input" type="search" placeholder="Artist, song, album" autocomplete="off">
+          <label class="visually-hidden" for="search-input">Search songs, artists and albums</label>
+          <input id="search-input" type="search" placeholder="Songs, artists, albums" autocomplete="off" enterkeyhint="search">
           <button class="key key--small key--go" type="submit">Find</button>
         </form>
-        <div id="crate-head" class="crate-head" hidden>
-          <button id="btn-back" class="link-btn" type="button">Back to playlists</button>
-          <div class="crate-title-row">
-            <h2 id="crate-title" class="crate-title"></h2>
-            <button id="btn-play-all" class="chip" type="button">Play all</button>
-          </div>
-          <p id="crate-note" class="crate-note" hidden></p>
-        </div>
-        <ol id="list" class="list"></ol>
-        <div id="list-status" class="list-status"></div>
-        <button id="btn-more" class="chip chip--more" type="button" hidden>Load more</button>
+        <div id="crate-body" class="crate-body"></div>
       </section>
     </div>
   </div>
 
+  <div id="scrim" class="scrim" hidden></div>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
   <script type="module" src="js/app.js"></script>

@@ -7,7 +7,10 @@ A neo-brutalist tape-deck player for your Spotify library. It's a plain HTML/CSS
 - **Transport keys:** shuffle, previous, play/pause, next, repeat (off → all → one).
 - **Heart:** like or unlike the current track, plus a volume fader.
 - **Speaker picker (Spotify Connect):** play in the browser, or use Retrodeck as a remote for your phone, PC or speaker.
-- **Crate:** Liked Songs, your playlists, and track search.
+- **Player-only view:** once a song is loaded, only the deck shows. **Browse** opens the library as a slide-out menu (from the right on a computer, from the bottom on a phone).
+- **Home:** Recently played, plus "More like this" suggestions for the current song.
+- **Search:** songs, artists and albums, with artist pages (songs, albums and singles) and album pages.
+- **Library:** Liked Songs and your playlists.
 - Light and dark themes, keyboard shortcuts (Space, N, P), lock-screen media controls, and installable as an app.
 - **Demo mode** with made-up tracks: open `?demo=1`.
 
@@ -38,6 +41,10 @@ New apps run in **Development Mode**:
 - **Search:** returns **10 results per page**, so the crate has *Load more*.
 - **Playlists:** track lists come back only for playlists you **own or collaborate on**. Other playlists still play with **Play all**.
 - **API changes:** the code uses the post-Feb-2026 endpoints (`/playlists/{id}/items`, `/me/library?uris=…`).
+
+## How "More like this" works
+
+Spotify switched off its recommendations and related-artists endpoints for new apps in November 2024, and removed artist top tracks in February 2026. So suggestions are built from what is still available: songs in the same genre as the artist, other songs by the same artists, and the rest of the album. Duplicates and alternate versions of the current song are filtered out.
 
 ## Phone use
 

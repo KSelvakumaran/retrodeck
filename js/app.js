@@ -1,9 +1,9 @@
 // Retrodeck — app controller.
 import { CONFIG } from './config.js';
-import { login, logout, handleRedirect, isSignedIn, isConfigured, redirectUri, getToken, AuthError } from './auth.js';
+import { login, logout, handleRedirect, isSignedIn, isConfigured, redirectUri, getToken, hasAllScopes, AuthError } from './auth.js';
 import * as sp from './api.js';
 import { ApiError } from './api.js';
-import { DEMO_TRACKS, DEMO_PLAYLISTS } from './demo.js';
+import * as demo from './demo.js';
 
 // ------------------------------------------------------------------ state
 const S = {
@@ -13,11 +13,16 @@ const S = {
   deviceId: null,        // this browser's Connect device id
   isLocal: false,        // true while playback is in this browser
   activeDevice: null,    // { id, name } of the device currently playing
-  playback: null,        // normalised: { track, paused, position, duration, shuffle, repeat, stamp, context }
+  playback: null,        // { track, paused, position, duration, shuffle, repeat, stamp, context }
   heart: { uri: null, saved: false },
   volume: 60,
-  view: 'liked',
-  list: { kind: null, items: [], next: null, loader: null, playlist: null, query: '' },
+  view: 'home',          // selected tab
+  stack: [],             // pages in the menu; last one is shown, earlier ones are "Back"
+  searchPage: null,      // last search, kept when switching tabs
+  focus: false,          // player-only view (something is loaded)
+  drawerOpen: false,     // menu open while in player-only view
+  homeStale: true,
+  cache: { recent: null, recentAt: 0, similar: new Map(), albums: new Map() },
   pollTimer: null,
   seeking: false,
 };
@@ -26,7 +31,7 @@ const $ = (sel) => document.querySelector(sel);
 const el = {
   gate: $('#gate'), app: $('#app'), gateSetup: $('#gate-setup'), gateRedirect: $('#gate-redirect'),
   gateError: $('#gate-error'), btnLogin: $('#btn-login'),
-  who: $('#who'), btnTheme: $('#btn-theme'), btnLogout: $('#btn-logout'),
+  who: $('#who'), btnBrowse: $('#btn-browse'), btnBrowseDeck: $('#btn-browse-deck'), btnTheme: $('#btn-theme'), btnLogout: $('#btn-logout'),
   deck: $('.deck'), art: $('#c-art'), cTitle: $('#c-title'), cSide: $('#c-side'),
   tapeL: $('#tape-l'), tapeR: $('#tape-r'),
   lcdTitle: $('#lcd-title'), lcdArtist: $('#lcd-artist'), lcdState: $('#lcd-state'), lcdPos: $('#lcd-pos'), lcdDur: $('#lcd-dur'),
@@ -37,10 +42,9 @@ const el = {
   btnSpeaker: $('#btn-speaker'), speakerName: $('#speaker-name'), speakerMenu: $('#speaker-menu'),
   deviceList: $('#device-list'), btnDevicesRefresh: $('#btn-devices-refresh'),
   openSpotify: $('#open-spotify'),
+  crate: $('#crate'), btnCloseCrate: $('#btn-close-crate'), scrim: $('#scrim'),
   tabs: [...document.querySelectorAll('.tab')], searchForm: $('#search-form'), searchInput: $('#search-input'),
-  crateHead: $('#crate-head'), btnBack: $('#btn-back'), crateTitle: $('#crate-title'), crateNote: $('#crate-note'),
-  btnPlayAll: $('#btn-play-all'),
-  list: $('#list'), listStatus: $('#list-status'), btnMore: $('#btn-more'),
+  body: $('#crate-body'),
   toast: $('#toast'),
 };
 
@@ -53,7 +57,7 @@ function h(tag, attrs = {}, ...children) {
     else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
     else node.setAttribute(k, v === true ? '' : v);
   }
-  for (const c of children.flat()) if (c !== null && c !== undefined) node.append(c);
+  for (const c of children.flat()) if (c !== null && c !== undefined && c !== false) node.append(c);
   return node;
 }
 
@@ -69,17 +73,21 @@ function pickImage(images, min = 300) {
   return (sorted.find((i) => (i.width || 0) >= min) || sorted[sorted.length - 1]).url;
 }
 
-function idFromUri(uri) { return uri?.split(':')[2] || null; }
+const idFromUri = (uri) => uri?.split(':')[2] || null;
 
 function mapTrack(t) {
   if (!t) return null;
   const id = t.id || idFromUri(t.uri);
+  const artistRefs = (t.artists || []).map((a) => ({ id: a.id || idFromUri(a.uri), name: a.name }));
   return {
     uri: t.uri,
     id,
     name: t.name || 'Untitled',
-    artists: (t.artists || []).map((a) => a.name).join(', '),
+    artists: artistRefs.map((a) => a.name).join(', '),
+    artistRefs,
     album: t.album?.name || '',
+    albumId: t.album?.id || idFromUri(t.album?.uri),
+    albumUri: t.album?.uri || null,
     art: pickImage(t.album?.images),
     thumb: pickImage(t.album?.images, 64),
     duration: t.duration_ms || 0,
@@ -87,6 +95,40 @@ function mapTrack(t) {
     playable: t.is_playable !== false && !t.is_local,
   };
 }
+
+function mapAlbum(a) {
+  return {
+    id: a.id, uri: a.uri, name: a.name || 'Untitled album',
+    artists: (a.artists || []).map((x) => x.name).join(', '),
+    year: (a.release_date || '').slice(0, 4),
+    type: a.album_type || 'album',
+    image: pickImage(a.images, 64), art: pickImage(a.images),
+    total: a.total_tracks ?? null,
+  };
+}
+
+function mapArtist(a) {
+  return { id: a.id, uri: a.uri, name: a.name || 'Unknown artist', image: pickImage(a.images, 64), genres: a.genres || [] };
+}
+
+function mapPlaylist(p) {
+  const owned = p.owner?.id === S.me?.id || !!p.collaborative;
+  const total = p.items?.total ?? p.tracks?.total ?? null; // field renamed tracks -> items (Feb 2026)
+  return {
+    id: p.id, uri: p.uri, name: p.name || 'Untitled playlist',
+    image: pickImage(p.images, 64), owned,
+    ownerName: p.owner?.display_name || p.owner?.id || 'someone else',
+    total,
+  };
+}
+
+// Album pages return tracks without their album; put it back so rows and the deck get the cover art.
+const withAlbum = (t, album) => ({ ...t, album: { id: album.id, uri: album.uri, name: album.name, images: album.images } });
+
+// Two versions of one song (single + album cut) count as the same song.
+const songKey = (t) => `${t.name.toLowerCase().replace(/\s*[([].*$/, '')}|${(t.artistRefs[0]?.name || '').toLowerCase()}`;
+
+const quoteSafe = (s) => s.replace(/"/g, '');
 
 let toastTimer;
 function toast(message, ms = 3800) {
@@ -196,15 +238,17 @@ function renderDeck() {
     el.cSide.textContent = t ? 'A' : '';
     el.art.setAttribute('href', t?.art || '');
     el.lcdTitle.textContent = t ? t.name : 'No tape';
-    el.lcdArtist.textContent = t ? [t.artists, t.album].filter(Boolean).join(' / ') : 'Pick something from your crate';
+    el.lcdArtist.textContent = t ? [t.artists, t.album].filter(Boolean).join(' / ') : 'Pick a song to start';
     el.lcdDur.textContent = clock(pb?.duration || 0);
     el.openSpotify.href = t?.url || 'https://open.spotify.com';
     document.title = t ? `${t.name} · Retrodeck` : 'Retrodeck';
     updateMarquee();
-    markCurrentRow();
+    markCurrentRows();
     refreshHeart();
     updateMediaSession();
+    onTrackChange();
   }
+  updateMode();
   if ('mediaSession' in navigator) navigator.mediaSession.playbackState = !t ? 'none' : playing ? 'playing' : 'paused';
   tick();
 }
@@ -236,10 +280,8 @@ function tick() {
     el.seek.value = Math.round(p * 1000);
     paintRange(el.seek);
   }
-  const rl = R_MIN + (R_MAX - R_MIN) * (1 - p);
-  const rr = R_MIN + (R_MAX - R_MIN) * p;
-  setR(el.tapeL, rl);
-  setR(el.tapeR, rr);
+  setR(el.tapeL, R_MIN + (R_MAX - R_MIN) * (1 - p));
+  setR(el.tapeR, R_MIN + (R_MAX - R_MIN) * p);
 }
 function setR(circle, r) {
   circle.setAttribute('r', r.toFixed(1));
@@ -250,6 +292,59 @@ function paintRange(input) {
   input.style.setProperty('--fill', `${pct}%`);
 }
 setInterval(tick, 250);
+
+// ------------------------------------------------------------------ player-only view + slide-out menu
+function updateMode() {
+  const focus = !!S.playback?.track;
+  if (focus === S.focus) return;
+  S.focus = focus;
+  document.body.classList.toggle('is-focus', focus);
+  el.btnBrowse.hidden = !focus;
+  if (focus) {
+    el.crate.setAttribute('role', 'dialog');
+    el.crate.setAttribute('aria-modal', 'true');
+    el.crate.setAttribute('aria-label', 'Browse');
+  } else {
+    el.crate.removeAttribute('role');
+    el.crate.removeAttribute('aria-modal');
+    el.crate.setAttribute('aria-label', 'Library');
+    closeDrawer({ restoreFocus: false });
+    if (isHomeRoot() && S.homeStale) loadHome();
+  }
+}
+
+function openDrawer(view) {
+  if (!S.focus) { if (view) setView(view); return; }
+  S.drawerOpener = document.activeElement;
+  S.drawerOpen = true;
+  document.body.classList.add('drawer-open');
+  el.scrim.hidden = false;
+  el.btnBrowse.setAttribute('aria-expanded', 'true');
+  el.btnBrowseDeck.setAttribute('aria-expanded', 'true');
+  if (view && view !== S.view) setView(view);
+  else if (isHomeRoot() && S.homeStale) loadHome();
+  setTimeout(() => {
+    if (S.view === 'search' && S.stack.length === 1) el.searchInput.focus();
+    else el.tabs.find((t) => t.dataset.view === S.view)?.focus();
+  }, 60);
+}
+
+function closeDrawer({ restoreFocus = true } = {}) {
+  if (!S.drawerOpen) return;
+  S.drawerOpen = false;
+  document.body.classList.remove('drawer-open');
+  el.scrim.hidden = true;
+  el.btnBrowse.setAttribute('aria-expanded', 'false');
+  el.btnBrowseDeck.setAttribute('aria-expanded', 'false');
+  if (restoreFocus) (S.drawerOpener?.isConnected ? S.drawerOpener : el.btnPlay).focus();
+}
+
+const crateVisible = () => !S.focus || S.drawerOpen;
+
+el.btnBrowse.addEventListener('click', () => (S.drawerOpen ? closeDrawer() : openDrawer()));
+el.btnBrowseDeck.addEventListener('click', () => openDrawer());
+el.btnCloseCrate.addEventListener('click', () => closeDrawer());
+el.scrim.addEventListener('click', () => closeDrawer());
 
 // ------------------------------------------------------------------ controls
 async function control(action, arg) {
@@ -312,10 +407,16 @@ el.volume.addEventListener('input', () => {
 paintRange(el.volume);
 
 document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (!el.speakerMenu.hidden) closeSpeakerMenu();
+    else closeDrawer();
+    return;
+  }
   if (e.target.closest('input, textarea, [contenteditable]') || e.metaKey || e.ctrlKey || e.altKey) return;
-  if (e.code === 'Space') { e.preventDefault(); control('toggle'); }
+  if (e.code === 'Space' && !e.target.closest('button')) { e.preventDefault(); control('toggle'); }
   else if (e.key === 'n') control('next');
   else if (e.key === 'p') control('prev');
+  else if (e.key === '/') { e.preventDefault(); openDrawer('search'); el.searchInput.focus(); }
 });
 
 // ------------------------------------------------------------------ hearts
@@ -323,7 +424,8 @@ async function refreshHeart() {
   const t = S.playback?.track;
   S.heart = { uri: t?.uri || null, saved: false };
   paintHeart();
-  if (!t || S.demo) { if (S.demo && t) { S.heart.saved = !!t.liked; paintHeart(); } return; }
+  if (!t) return;
+  if (S.demo) { S.heart.saved = !!t.liked; paintHeart(); return; }
   try {
     const saved = await sp.isSaved(t.uri);
     if (S.heart.uri === t.uri) { S.heart.saved = saved; paintHeart(); }
@@ -338,7 +440,7 @@ el.btnHeart.addEventListener('click', () => guard(async () => {
   if (!uri) return;
   const want = !S.heart.saved;
   S.heart.saved = want; paintHeart();
-  if (S.demo) { const t = S.playback.track; t.liked = want; return; }
+  if (S.demo) { S.playback.track.liked = want; return; }
   try { want ? await sp.save(uri) : await sp.unsave(uri); toast(want ? 'Added to Liked Songs' : 'Removed from Liked Songs', 2200); }
   catch (err) { S.heart.saved = !want; paintHeart(); throw err; }
 }));
@@ -387,7 +489,7 @@ async function initPlayer() {
   });
   player.addListener('not_ready', () => { S.isLocal = false; startPolling(); });
   player.addListener('player_state_changed', (st) => {
-    if (!st) { // playback moved to another device
+    if (!st) {
       if (S.isLocal) { S.isLocal = false; startPolling(); }
       return;
     }
@@ -499,9 +601,8 @@ el.btnSpeaker.addEventListener('click', (e) => {
 el.btnDevicesRefresh.addEventListener('click', (e) => { e.stopPropagation(); openSpeakerMenu(); });
 el.speakerMenu.addEventListener('click', (e) => e.stopPropagation());
 document.addEventListener('click', closeSpeakerMenu);
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSpeakerMenu(); });
 
-// ------------------------------------------------------------------ playing from the crate
+// ------------------------------------------------------------------ playing
 function targetDevice() {
   if (S.activeDevice && !S.isLocal) return S.activeDevice.id;
   return S.deviceId || S.activeDevice?.id || undefined;
@@ -518,179 +619,480 @@ async function playFrom(options) {
   });
 }
 
-// ------------------------------------------------------------------ crate (library)
+function playSection(section, index) {
+  const t = section.items[index];
+  if (!t?.playable) return;
+  if (section.context) {
+    playFrom({ contextUri: section.context, offset: t.uri });
+  } else {
+    // Queue the whole section from this track on, so the next song comes from the same list.
+    const uris = section.items.filter((x) => x.playable).map((x) => x.uri);
+    playFrom({ uris, offset: Math.max(0, uris.indexOf(t.uri)) });
+  }
+  if (S.focus) closeDrawer({ restoreFocus: false });
+}
+
+function playAll(page) {
+  if (page.playAll) playFrom(page.playAll);
+  if (S.focus) closeDrawer({ restoreFocus: false });
+}
+
+// ------------------------------------------------------------------ the menu: pages and sections
+// A page is { title?, sub?, note?, playAll?, sections: [...] }.
+// A section is { heading?, note?, kind: 'tracks'|'albums'|'artists'|'playlists', items, context?, limit?,
+//                loading?, error?, empty?, action?, more?: async (section) => { items, hasMore }, hasMore? }.
+
+const top = () => S.stack[S.stack.length - 1];
+const isTop = (page) => top() === page;
+const isHomeRoot = () => S.view === 'home' && S.stack.length === 1;
+
 function setView(view) {
   S.view = view;
   el.tabs.forEach((t) => t.setAttribute('aria-selected', String(t.dataset.view === view)));
-  el.searchForm.hidden = view !== 'search';
-  el.crateHead.hidden = true;
-  if (view === 'liked') loadList({ kind: 'liked', loader: loaderLiked });
-  if (view === 'playlists') loadList({ kind: 'playlists', loader: loaderPlaylists });
+  if (view === 'home') loadHome();
+  if (view === 'liked') showRoot(pagedTracks({ empty: 'No liked songs yet. Tap Like on the deck to add one.' }, loaderLiked));
+  if (view === 'playlists') showRoot(pagedList('playlists', { empty: 'No playlists yet.' }, loaderPlaylists));
   if (view === 'search') {
-    if (S.list.kind === 'search' && S.list.query) renderList();
-    else { resetList('search'); el.listStatus.textContent = 'Search Spotify for a track.'; }
-    el.searchInput.focus();
+    showRoot(S.searchPage || { sections: [], hint: 'Search for a song, artist or album.' });
   }
 }
 el.tabs.forEach((t) => t.addEventListener('click', () => setView(t.dataset.view)));
 
-function resetList(kind, extra = {}) {
-  S.list = { kind, items: [], next: null, loader: null, playlist: null, query: '', ...extra };
-  el.list.replaceChildren();
-  el.btnMore.hidden = true;
-  el.listStatus.textContent = '';
+function showRoot(page) {
+  S.stack = [page];
+  el.body.scrollTop = 0;
+  render();
+  startSections(page);
 }
 
-async function loadList({ kind, loader, ...extra }) {
-  resetList(kind, { loader, ...extra });
-  el.listStatus.textContent = 'Loading…';
-  await loadMore();
+function push(page) {
+  const current = top();
+  if (current) current.scroll = el.body.scrollTop;
+  S.stack.push(page);
+  el.body.scrollTop = 0;
+  render();
 }
 
-async function loadMore() {
-  const list = S.list;
-  if (!list.loader) return;
-  el.btnMore.disabled = true;
-  const result = await guard(() => list.loader(list.items.length, list));
-  el.btnMore.disabled = false;
-  if (S.list !== list || !result) { if (S.list === list) el.listStatus.textContent = 'Could not load this list.'; return; }
-  list.items.push(...result.items);
-  list.next = result.hasMore;
-  renderList();
-}
-el.btnMore.addEventListener('click', loadMore);
-
-function renderList() {
-  const { kind, items } = S.list;
-  el.list.replaceChildren(...items.map((item, i) => (kind === 'playlists' ? playlistRow(item) : trackRow(item, i))));
-  el.btnMore.hidden = !S.list.next;
-  el.listStatus.textContent = items.length ? '' : emptyText(kind);
-  markCurrentRow();
+function back() {
+  if (S.stack.length < 2) return;
+  S.stack.pop();
+  render();
+  el.body.scrollTop = top().scroll || 0;
 }
 
-function emptyText(kind) {
-  return {
-    liked: 'No liked songs yet. Heart a track on the deck to add it here.',
-    playlists: 'No playlists yet.',
-    playlist: 'This playlist is empty.',
-    search: 'Nothing matched. Try another spelling or an artist name.',
-  }[kind] || '';
+// Sections with a loader and no items yet fetch their first page.
+function startSections(page) {
+  for (const sec of page.sections) {
+    if (sec.more && !sec.items.length && !sec.started) loadMore(page, sec);
+  }
 }
 
-function trackRow(t, index) {
-  const disabled = !t.playable;
-  return h('li', {},
-    h('button', {
-      class: 'row', type: 'button', 'data-uri': t.uri, disabled,
-      title: disabled ? 'Not playable' : `Play ${t.name}`,
-      onclick: () => playTrackAt(index),
+async function loadMore(page, sec) {
+  sec.started = true;
+  sec.loading = true;
+  sec.error = null;
+  if (isTop(page)) render();
+  try {
+    const res = await sec.more(sec);
+    sec.items.push(...res.items);
+    sec.hasMore = !!res.hasMore;
+  } catch (err) {
+    console.error(err);
+    if (err instanceof AuthError) return showGate(explain(err));
+    sec.error = explain(err);
+  }
+  sec.loading = false;
+  if (isTop(page)) render();
+}
+
+function pagedTracks(sec, loader, extra = {}) {
+  return { ...extra, sections: [{ kind: 'tracks', items: [], ...sec, more: loader }] };
+}
+function pagedList(kind, sec, loader) {
+  return { sections: [{ kind, items: [], ...sec, more: loader }] };
+}
+
+function render() {
+  const page = top();
+  const searchRoot = S.view === 'search' && S.stack.length === 1;
+  el.searchForm.hidden = !searchRoot;
+  if (!page) { el.body.replaceChildren(); return; }
+
+  const nodes = [];
+  if (S.stack.length > 1) {
+    nodes.push(h('button', { class: 'link-btn crate-back', type: 'button', onclick: back }, 'Back'));
+  }
+  if (page.title) {
+    nodes.push(h('div', { class: 'page-head' },
+      page.art ? h('img', { class: 'page-art', src: page.art, alt: '', width: 72, height: 72 }) : null,
+      h('div', { class: 'page-text' },
+        h('h2', { class: 'page-title' }, page.title),
+        page.sub ? h('p', { class: 'page-sub' }, page.sub) : null),
+      page.playAll ? h('button', { class: 'chip chip--hot', type: 'button', onclick: () => playAll(page) }, 'Play all') : null));
+  }
+  if (page.note) nodes.push(h('p', { class: 'crate-note' }, page.note));
+  if (page.hint && !page.sections.length) nodes.push(h('p', { class: 'list-status' }, page.hint));
+
+  for (const sec of page.sections) nodes.push(renderSection(page, sec));
+  el.body.replaceChildren(...nodes);
+  markCurrentRows();
+}
+
+function renderSection(page, sec) {
+  const wrap = h('section', { class: 'sec' });
+  if (sec.heading) wrap.append(h('h3', { class: 'sec-head' }, sec.heading));
+  if (sec.note) wrap.append(h('p', { class: 'sec-note' }, sec.note));
+
+  const limit = sec.limit ?? Infinity;
+  const shown = sec.items.slice(0, limit);
+  if (shown.length) {
+    wrap.append(h('ol', { class: 'list' }, shown.map((item, i) => h('li', {}, rowFor(sec, item, i)))));
+  }
+  if (sec.items.length > limit) {
+    wrap.append(h('button', {
+      class: 'chip chip--more', type: 'button',
+      onclick: () => { sec.limit = Infinity; render(); },
+    }, `Show all ${sec.items.length}`));
+  } else if (sec.hasMore && !sec.loading) {
+    wrap.append(h('button', { class: 'chip chip--more', type: 'button', onclick: () => loadMore(page, sec) }, 'Load more'));
+  }
+
+  let status = '';
+  if (sec.loading) status = 'Loading…';
+  else if (sec.error) status = sec.error;
+  else if (!sec.items.length && sec.empty) status = sec.empty;
+  if (status) wrap.append(h('p', { class: 'list-status' }, status));
+  if (sec.action && !sec.loading) {
+    wrap.append(h('button', { class: 'chip chip--more', type: 'button', onclick: sec.action.onclick }, sec.action.label));
+  }
+  return wrap;
+}
+
+function art(src, round) {
+  const cls = round ? 'row-art row-art--round' : 'row-art';
+  return src ? h('img', { class: cls, src, alt: '', loading: 'lazy', width: 44, height: 44 }) : h('span', { class: cls });
+}
+
+function rowFor(sec, item, index) {
+  if (sec.kind === 'tracks') {
+    const disabled = !item.playable;
+    return h('button', {
+      class: 'row', type: 'button', 'data-uri': item.uri, disabled,
+      title: disabled ? 'Not playable' : `Play ${item.name}`,
+      onclick: () => playSection(sec, index),
     },
-    t.thumb ? h('img', { class: 'row-art', src: t.thumb, alt: '', loading: 'lazy', width: 44, height: 44 }) : h('span', { class: 'row-art' }),
-    h('span', { class: 'row-text' },
-      h('span', { class: 'row-name' }, t.name),
-      h('span', { class: 'row-sub' }, t.artists)),
-    h('span', { class: 'row-meta' }, clock(t.duration))));
+    art(item.thumb),
+    h('span', { class: 'row-text' }, h('span', { class: 'row-name' }, item.name), h('span', { class: 'row-sub' }, item.artists)),
+    h('span', { class: 'row-meta' }, clock(item.duration)));
+  }
+  if (sec.kind === 'albums') {
+    const kind = item.type === 'single' ? 'Single' : item.type === 'compilation' ? 'Compilation' : 'Album';
+    return h('button', { class: 'row', type: 'button', onclick: () => openAlbum(item) },
+      art(item.image),
+      h('span', { class: 'row-text' }, h('span', { class: 'row-name' }, item.name), h('span', { class: 'row-sub' }, `${kind} by ${item.artists}`)),
+      h('span', { class: 'row-meta' }, item.year || ''));
+  }
+  if (sec.kind === 'artists') {
+    return h('button', { class: 'row', type: 'button', onclick: () => openArtist(item) },
+      art(item.image, true),
+      h('span', { class: 'row-text' }, h('span', { class: 'row-name' }, item.name), h('span', { class: 'row-sub' }, item.genres?.length ? `Artist, ${item.genres.slice(0, 2).join(', ')}` : 'Artist')),
+      h('span', { class: 'row-meta' }, ''));
+  }
+  // playlists
+  return h('button', { class: 'row', type: 'button', onclick: () => openPlaylist(item) },
+    art(item.image),
+    h('span', { class: 'row-text' }, h('span', { class: 'row-name' }, item.name), h('span', { class: 'row-sub' }, item.owned ? `${item.total ?? '?'} songs` : `By ${item.ownerName}`)),
+    h('span', { class: 'row-meta' }, item.total != null ? String(item.total) : ''));
 }
 
-function playlistRow(p) {
-  return h('li', {},
-    h('button', { class: 'row', type: 'button', onclick: () => openPlaylist(p) },
-      p.image ? h('img', { class: 'row-art', src: p.image, alt: '', loading: 'lazy', width: 44, height: 44 }) : h('span', { class: 'row-art' }),
-      h('span', { class: 'row-text' },
-        h('span', { class: 'row-name' }, p.name),
-        h('span', { class: 'row-sub' }, p.owned ? `${p.total ?? '?'} tracks` : `By ${p.ownerName}`)),
-      h('span', { class: 'row-meta' }, p.total != null ? String(p.total) : '')));
-}
-
-function markCurrentRow() {
+function markCurrentRows() {
   const uri = S.playback?.track?.uri;
-  el.list.querySelectorAll('.row[data-uri]').forEach((r) => {
+  el.body.querySelectorAll('.row[data-uri]').forEach((r) => {
     const on = !!uri && r.dataset.uri === uri;
     r.classList.toggle('is-current', on);
     if (on) r.setAttribute('aria-current', 'true'); else r.removeAttribute('aria-current');
   });
 }
 
-function playTrackAt(index) {
-  const { kind, items, playlist } = S.list;
-  const t = items[index];
-  if (!t) return;
-  if (kind === 'playlist' && playlist) {
-    playFrom({ contextUri: playlist.uri, offset: t.uri });
-  } else {
-    // Liked songs and search results: queue what is loaded, starting at this track.
-    const uris = items.filter((x) => x.playable).map((x) => x.uri);
-    playFrom({ uris, offset: Math.max(0, uris.indexOf(t.uri)) });
+// ------------------------------------------------------------------ Home: recently played + more like this
+function onTrackChange() {
+  S.homeStale = true;
+  if (crateVisible() && isHomeRoot()) {
+    clearTimeout(onTrackChange.t);
+    onTrackChange.t = setTimeout(loadHome, 700);
   }
 }
 
-// ---- loaders
-async function loaderLiked(offset) {
-  if (S.demo) return { items: offset ? [] : DEMO_TRACKS.map((t) => ({ ...t })), hasMore: false };
-  const page = await sp.getLiked(offset);
+async function loadHome() {
+  S.homeStale = false;
+  const nowPlaying = S.playback?.track || null;
+  const recent = { heading: 'Recently played', kind: 'tracks', items: [], limit: 8, loading: true, empty: 'Nothing here yet. Songs you play show up here.' };
+  const similar = { heading: 'More like this', kind: 'tracks', items: [], limit: 10, loading: true, empty: 'Play a song to get suggestions.' };
+  const page = { sections: nowPlaying ? [similar, recent] : [recent, similar] };
+  if (S.view !== 'home') return;
+  S.stack = [page];
+  render();
+
+  const recentP = fetchRecent(recent).then((items) => { recent.loading = false; if (isTop(page)) render(); return items; });
+  const seed = nowPlaying || (await recentP)[0];
+  if (!seed) { similar.loading = false; if (isTop(page)) render(); return; }
+
+  similar.heading = `More like “${seed.name}”`;
+  similar.note = 'From the same artists, genre and album.';
+  try { similar.items = await getSimilar(seed); }
+  catch (err) { console.error(err); similar.error = 'Could not load suggestions right now.'; }
+  similar.loading = false;
+  if (isTop(page)) render();
+}
+
+async function fetchRecent(sec) {
+  if (S.demo) return (sec.items = demo.demoRecent());
+  if (!hasAllScopes()) {
+    sec.empty = 'Spotify needs one more permission to show what you played recently.';
+    sec.action = { label: 'Allow and sign in again', onclick: () => guard(login) };
+    return [];
+  }
+  if (S.cache.recent && Date.now() - S.cache.recentAt < 20_000) return (sec.items = S.cache.recent.slice());
+  try {
+    const res = await sp.getRecent();
+    const seen = new Set();
+    const items = [];
+    for (const x of res.items || []) {
+      const t = mapTrack(x.track);
+      if (!t || seen.has(t.uri)) continue;
+      seen.add(t.uri);
+      items.push(t);
+    }
+    S.cache.recent = items;
+    S.cache.recentAt = Date.now();
+    return (sec.items = items.slice());
+  } catch (err) {
+    console.error(err);
+    if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+      sec.empty = 'Spotify needs one more permission to show what you played recently.';
+      sec.action = { label: 'Allow and sign in again', onclick: () => guard(login) };
+    } else if (err instanceof AuthError) {
+      showGate(explain(err));
+    } else {
+      sec.error = 'Could not load recently played.';
+    }
+    return [];
+  }
+}
+
+// Spotify switched off its recommendations and related-artists endpoints for new apps in 2024,
+// so suggestions are built from what is still open: the song's genres, its artists' other songs, and its album.
+async function getSimilar(seed) {
+  if (S.demo) return demo.demoSimilar(seed);
+  if (S.cache.similar.has(seed.uri)) return S.cache.similar.get(seed.uri);
+
+  const artists = (seed.artistRefs || []).filter((a) => a.id).slice(0, 3);
+  const searchTracks = (q, offset = 0) => sp.searchTracks(q, offset).then((r) => r.tracks?.items || []);
+
+  const genrePool = artists.length
+    ? sp.getArtist(artists[0].id).then(async (artist) => {
+      const genres = (artist.genres || []).slice(0, 2);
+      const lists = await Promise.all(genres.map((g) =>
+        searchTracks(`genre:"${quoteSafe(g)}"`, 10 * Math.floor(Math.random() * 3)).catch(() => [])));
+      return interleave(lists);
+    })
+    : Promise.resolve([]);
+  const artistPools = artists.map((a) => searchTracks(`artist:"${quoteSafe(a.name)}"`));
+  const albumPool = seed.albumId
+    ? getAlbumCached(seed.albumId).then((album) => (album.tracks?.items || []).map((t) => withAlbum(t, album)))
+    : Promise.resolve([]);
+
+  const settled = await Promise.allSettled([genrePool, artistPools[0], albumPool, ...artistPools.slice(1)].filter(Boolean));
+  const pools = settled.map((r) => (r.status === 'fulfilled' ? (r.value || []).filter(Boolean).map(mapTrack) : []));
+
+  const seen = new Set([seed.uri]);
+  const seenSongs = new Set([songKey(seed)]);
+  const out = [];
+  for (const t of interleave(pools)) {
+    if (!t?.playable || seen.has(t.uri) || seenSongs.has(songKey(t))) continue;
+    seen.add(t.uri);
+    seenSongs.add(songKey(t));
+    out.push(t);
+    if (out.length >= 20) break;
+  }
+  S.cache.similar.set(seed.uri, out);
+  return out;
+}
+
+function interleave(lists) {
+  const out = [];
+  const max = Math.max(0, ...lists.map((l) => l.length));
+  for (let i = 0; i < max; i++) for (const l of lists) if (l[i]) out.push(l[i]);
+  return out;
+}
+
+async function getAlbumCached(id) {
+  if (!S.cache.albums.has(id)) S.cache.albums.set(id, sp.getAlbum(id).catch((e) => { S.cache.albums.delete(id); throw e; }));
+  return S.cache.albums.get(id);
+}
+
+// ------------------------------------------------------------------ Liked + playlists
+async function loaderLiked(sec) {
+  if (S.demo) return { items: demo.DEMO_TRACKS.filter((t) => t.liked).map((t) => ({ ...t })), hasMore: false };
+  const page = await sp.getLiked(sec.items.length);
   return { items: page.items.map((x) => mapTrack(x.track)).filter(Boolean), hasMore: !!page.next };
 }
 
-function mapPlaylist(p) {
-  const owned = p.owner?.id === S.me?.id || !!p.collaborative;
-  const total = p.items?.total ?? p.tracks?.total ?? null; // field renamed tracks -> items (Feb 2026)
-  return {
-    id: p.id, uri: p.uri, name: p.name || 'Untitled playlist',
-    image: pickImage(p.images, 64), owned,
-    ownerName: p.owner?.display_name || p.owner?.id || 'someone else',
-    total,
-  };
-}
-
-async function loaderPlaylists(offset) {
-  if (S.demo) return { items: offset ? [] : DEMO_PLAYLISTS, hasMore: false };
-  const page = await sp.getPlaylists(offset);
+async function loaderPlaylists(sec) {
+  if (S.demo) return { items: demo.DEMO_PLAYLISTS, hasMore: false };
+  const page = await sp.getPlaylists(sec.items.length);
   return { items: page.items.filter(Boolean).map(mapPlaylist), hasMore: !!page.next };
 }
 
-async function loaderPlaylistItems(offset, list) {
-  if (S.demo) return { items: offset ? [] : DEMO_TRACKS.slice(list.playlist.slice || 0).map((t) => ({ ...t })), hasMore: false };
-  const page = await sp.getPlaylistItems(list.playlist.id, offset);
-  const items = page.items
-    .map((x) => x.item ?? x.track) // "item" since Feb 2026, "track" before
-    .filter((t) => t && t.type !== 'episode')
-    .map(mapTrack);
-  return { items, hasMore: !!page.next };
-}
-
-async function loaderSearch(offset, list) {
-  if (S.demo) {
-    const q = list.query.toLowerCase();
-    return { items: DEMO_TRACKS.filter((t) => `${t.name} ${t.artists}`.toLowerCase().includes(q)).map((t) => ({ ...t })), hasMore: false };
-  }
-  const res = await sp.searchTracks(list.query, offset);
-  const page = res.tracks;
-  return { items: page.items.filter(Boolean).map(mapTrack), hasMore: !!page.next && offset + page.items.length < 100 };
-}
-
 function openPlaylist(p) {
-  el.crateHead.hidden = false;
-  el.crateTitle.textContent = p.name;
-  el.btnPlayAll.onclick = () => playFrom({ contextUri: p.uri });
-  if (p.owned) {
-    el.crateNote.hidden = true;
-    loadList({ kind: 'playlist', loader: loaderPlaylistItems, playlist: p });
-  } else {
+  const playAllOpt = { contextUri: p.uri };
+  if (!p.owned) {
     // Feb 2026 rule: track lists are only returned for playlists you own or collaborate on.
-    el.crateNote.hidden = false;
-    el.crateNote.textContent = 'Spotify only lists tracks for playlists you own or collaborate on. Press Play all to play it.';
-    resetList('playlist', { playlist: p });
+    push({
+      title: p.name, sub: `Playlist by ${p.ownerName}`, art: p.image, playAll: playAllOpt,
+      note: 'Spotify only lists songs for playlists you own or collaborate on. Play all still works.',
+      sections: [],
+    });
+    return;
   }
+  const page = pagedTracks({ context: p.uri, empty: 'This playlist is empty.' }, async (sec) => {
+    if (S.demo) return { items: demo.demoContextTracks(p.uri).map((t) => ({ ...t })), hasMore: false };
+    const res = await sp.getPlaylistItems(p.id, sec.items.length);
+    const items = res.items
+      .map((x) => x.item ?? x.track) // "item" since Feb 2026, "track" before
+      .filter((t) => t && t.type !== 'episode')
+      .map(mapTrack);
+    return { items, hasMore: !!res.next };
+  }, { title: p.name, sub: `${p.total ?? '?'} songs`, art: p.image, playAll: playAllOpt });
+  push(page);
+  startSections(page);
 }
-el.btnBack.addEventListener('click', () => setView('playlists'));
 
+// ------------------------------------------------------------------ search: songs, artists, albums
 el.searchForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const query = el.searchInput.value.trim();
   if (!query) return;
   el.searchInput.blur();
-  loadList({ kind: 'search', loader: loaderSearch, query });
+  runSearch(query);
 });
+
+async function runSearch(query) {
+  const songs = { heading: 'Songs', kind: 'tracks', items: [], limit: 10, loading: true, empty: 'No songs matched.' };
+  const artists = { heading: 'Artists', kind: 'artists', items: [], limit: 4, loading: true, empty: 'No artists matched.' };
+  const albums = { heading: 'Albums', kind: 'albums', items: [], limit: 6, loading: true, empty: 'No albums matched.' };
+  const page = { query, sections: [songs, artists, albums] };
+  S.searchPage = page;
+  if (S.view !== 'search') return;
+  S.stack = [page];
+  render();
+
+  try {
+    if (S.demo) {
+      const r = demo.demoSearch(query);
+      songs.items = r.tracks; artists.items = r.artists; albums.items = r.albums;
+    } else {
+      const r = await sp.searchAll(query);
+      songs.items = (r.tracks?.items || []).filter(Boolean).map(mapTrack);
+      artists.items = (r.artists?.items || []).filter(Boolean).map(mapArtist);
+      albums.items = (r.albums?.items || []).filter(Boolean).map(mapAlbum);
+      // More songs come 10 at a time (the Development Mode search limit).
+      songs.hasMore = !!r.tracks?.next;
+      songs.more = async (sec) => {
+        const res = await sp.searchTracks(query, sec.items.length);
+        const known = new Set(sec.items.map((t) => t.uri));
+        return {
+          items: (res.tracks?.items || []).filter(Boolean).map(mapTrack).filter((t) => !known.has(t.uri)),
+          hasMore: !!res.tracks?.next && sec.items.length + 10 < 100,
+        };
+      };
+      songs.started = true;
+    }
+  } catch (err) {
+    console.error(err);
+    if (err instanceof AuthError) return showGate(explain(err));
+    songs.error = explain(err);
+  }
+  // Put the strongest kind of match first: an exact artist name puts Artists on top.
+  const q = query.toLowerCase();
+  if (artists.items[0]?.name.toLowerCase() === q) page.sections = [artists, songs, albums];
+  else if (albums.items[0]?.name.toLowerCase() === q && songs.items[0]?.name.toLowerCase() !== q) page.sections = [albums, songs, artists];
+  for (const s of page.sections) s.loading = false;
+  if (isTop(page)) render();
+}
+
+async function openAlbum(a) {
+  const tracks = { kind: 'tracks', items: [], context: a.uri, loading: true, empty: 'No songs on this album.' };
+  const page = {
+    title: a.name, sub: [a.type === 'single' ? 'Single' : 'Album', a.artists, a.year].filter(Boolean).join(', '),
+    art: a.image, playAll: { contextUri: a.uri }, sections: [tracks],
+  };
+  push(page);
+  try {
+    if (S.demo) {
+      tracks.items = demo.demoAlbum(a.id).tracks;
+    } else {
+      const album = await getAlbumCached(a.id);
+      tracks.items = (album.tracks?.items || []).map((t) => mapTrack(withAlbum(t, album)));
+      page.art = pickImage(album.images, 64) || page.art;
+      if (album.tracks?.next) {
+        tracks.hasMore = true;
+        tracks.more = async (sec) => {
+          const res = await sp.getAlbumTracks(a.id, sec.items.length);
+          return { items: res.items.map((t) => mapTrack(withAlbum(t, album))), hasMore: !!res.next };
+        };
+      }
+    }
+  } catch (err) {
+    console.error(err);
+    if (err instanceof AuthError) return showGate(explain(err));
+    tracks.error = explain(err);
+  }
+  tracks.loading = false;
+  if (isTop(page)) render();
+}
+
+async function openArtist(a) {
+  // Spotify removed "artist top tracks" for new apps, so the artist's songs come from search.
+  const songs = { heading: 'Songs', kind: 'tracks', items: [], limit: 10, loading: true, empty: 'No songs found.' };
+  const albums = { heading: 'Albums and singles', kind: 'albums', items: [], limit: 6, loading: true, empty: 'No albums found.' };
+  const page = {
+    title: a.name, sub: a.genres?.length ? a.genres.slice(0, 3).join(', ') : 'Artist',
+    art: a.image, playAll: { contextUri: a.uri }, sections: [songs, albums],
+  };
+  push(page);
+
+  if (S.demo) {
+    const r = demo.demoArtist(a.id);
+    songs.items = r.tracks; albums.items = r.albums;
+  } else {
+    const q = `artist:"${quoteSafe(a.name)}"`;
+    const byThisArtist = (list) => {
+      const mapped = list.filter(Boolean).map(mapTrack);
+      const own = mapped.filter((t) => t.artistRefs.some((x) => x.id === a.id));
+      return own.length ? own : mapped;
+    };
+    const [songRes, albumRes] = await Promise.allSettled([sp.searchTracks(q), sp.getArtistAlbums(a.id)]);
+    if (songRes.status === 'fulfilled') {
+      songs.items = byThisArtist(songRes.value.tracks?.items || []);
+      songs.hasMore = !!songRes.value.tracks?.next;
+      songs.started = true;
+      songs.more = async (sec) => {
+        const res = await sp.searchTracks(q, sec.items.length);
+        const known = new Set(sec.items.map((t) => t.uri));
+        return { items: byThisArtist(res.tracks?.items || []).filter((t) => !known.has(t.uri)), hasMore: !!res.tracks?.next };
+      };
+    } else {
+      if (songRes.reason instanceof AuthError) return showGate(explain(songRes.reason));
+      songs.error = explain(songRes.reason);
+    }
+    if (albumRes.status === 'fulfilled') albums.items = (albumRes.value.items || []).filter(Boolean).map(mapAlbum);
+    else albums.error = explain(albumRes.reason);
+  }
+  songs.loading = false;
+  albums.loading = false;
+  if (isTop(page)) render();
+}
 
 // ------------------------------------------------------------------ media session (lock screen / headset keys)
 function updateMediaSession() {
@@ -712,18 +1114,15 @@ if ('mediaSession' in navigator) {
 // ------------------------------------------------------------------ demo mode (no sign-in)
 let demoQueue = [];
 function demoPlay({ uris, contextUri, offset }) {
-  if (uris) demoQueue = uris.map((u) => DEMO_TRACKS.find((t) => t.uri === u)).filter(Boolean);
-  else if (contextUri) {
-    const pl = DEMO_PLAYLISTS.find((p) => p.uri === contextUri);
-    demoQueue = DEMO_TRACKS.slice(pl?.slice || 0);
-  }
+  if (uris) demoQueue = uris.map((u) => demo.DEMO_TRACKS.find((t) => t.uri === u)).filter(Boolean);
+  else if (contextUri) demoQueue = demo.demoContextTracks(contextUri);
   let start = 0;
   if (typeof offset === 'number') start = offset;
   else if (offset) start = Math.max(0, demoQueue.findIndex((t) => t.uri === offset));
   demoLoad(start, false);
 }
 function demoLoad(index, paused) {
-  if (!demoQueue.length) demoQueue = DEMO_TRACKS.slice();
+  if (!demoQueue.length) demoQueue = demo.DEMO_TRACKS.slice();
   const i = (index + demoQueue.length) % demoQueue.length;
   const t = demoQueue[i];
   S.demoIndex = i;
@@ -770,16 +1169,17 @@ async function startApp() {
     el.btnLogout.textContent = 'Exit demo';
     S.activeDevice = { id: 'demo', name: 'Retrodeck' };
     renderSpeaker();
-    setView('liked');
-    demoQueue = DEMO_TRACKS.slice();
-    demoLoad(0, true);
-    if (new URLSearchParams(location.search).has('playing')) demoControl('toggle');
+    setView('home');
+    if (new URLSearchParams(location.search).has('playing')) {
+      demoQueue = demo.DEMO_TRACKS.slice();
+      demoLoad(2, false);
+    }
     return;
   }
 
   S.me = await sp.getMe();
   el.who.textContent = S.me.display_name || S.me.id;
-  setView('liked');
+  setView('home');
   startPolling();      // pick up whatever is already playing on any device
   initPlayer();        // register this browser as a Connect speaker
 }

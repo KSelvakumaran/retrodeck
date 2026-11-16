@@ -59,6 +59,15 @@ export const getPlaylistItems = (id, offset = 0) =>
   api(`/playlists/${id}/items`, { query: { limit: 50, offset, additional_types: 'track' } });
 export const searchTracks = (q, offset = 0) =>
   api('/search', { query: { q, type: 'track', limit: 10, offset } });
+// One call returns up to 10 of each type (10 is the Development Mode maximum).
+export const searchAll = (q) =>
+  api('/search', { query: { q, type: 'track,artist,album', limit: 10 } });
+export const getRecent = () => api('/me/player/recently-played', { query: { limit: 50 } });
+export const getAlbum = (id) => api(`/albums/${id}`);
+export const getAlbumTracks = (id, offset = 0) => api(`/albums/${id}/tracks`, { query: { limit: 50, offset } });
+export const getArtist = (id) => api(`/artists/${id}`);
+export const getArtistAlbums = (id) =>
+  api(`/artists/${id}/albums`, { query: { include_groups: 'album,single', limit: 20 } });
 export const getPlayback = () => api('/me/player', { query: { additional_types: 'track' } });
 export const getDevices = () => api('/me/player/devices');
 

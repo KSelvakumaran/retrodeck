@@ -1,6 +1,6 @@
 // Caches the app shell so Retrodeck opens instantly and installs as a PWA.
 // Spotify API calls, the playback SDK and album art always go to the network.
-const CACHE = 'retrodeck-v2';
+const CACHE = 'retrodeck-v3';
 const SHELL = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
   'js/app.js', 'js/api.js', 'js/auth.js', 'js/config.js', 'js/demo.js',

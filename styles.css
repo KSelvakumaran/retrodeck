@@ -1,5 +1,5 @@
 /* Retrodeck — neo-brutalist tape deck
-   Chassis aluminium, pure black ink, magenta J-card, cobalt keys, green LCD. */
+   Chassis aluminium, pure black ink, burgundy J-card, cobalt keys, green LCD. */
 
 :root {
   --chassis: #CDD3D9;
@@ -105,6 +105,7 @@ a { color: inherit; }
 }
 
 .chip {
+  white-space: nowrap;
   display: inline-flex; align-items: center; gap: .4rem;
   height: 38px; padding: 0 .8rem;
   background: var(--slab);
@@ -117,6 +118,8 @@ a { color: inherit; }
 .chip:disabled { opacity: .45; cursor: not-allowed; transform: none; }
 .chip--heart[aria-pressed="true"] { background: var(--hot); color: var(--on-hot); }
 .chip--heart[aria-pressed="true"] svg { fill: currentColor; }
+.chip--hot { background: var(--hot); color: var(--on-hot); }
+.chip--browse[aria-expanded="true"] { background: var(--ink); color: var(--slab); box-shadow: none; transform: translate(3px, 3px); }
 .link-btn {
   background: none; border: 0; padding: 0;
   font-weight: 700; text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 2px;
@@ -249,28 +252,40 @@ input[type="range"]:disabled { opacity: .5; }
 .attribution { margin: 0; font-size: .85rem; color: var(--muted); }
 .attribution a { font-weight: 700; color: var(--text); text-underline-offset: 3px; }
 
-/* ---------- Crate ---------- */
+/* ---------- Crate (library / menu) ---------- */
 .crate {
   padding: 0; display: flex; flex-direction: column; min-height: 520px;
   position: sticky; top: 16px; max-height: calc(100dvh - 32px);
 }
-.crate .list { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; }
-.tabs { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: var(--bw) solid var(--ink); }
+.crate-bar { display: flex; border-bottom: var(--bw) solid var(--ink); }
+.tabs { flex: 1; display: grid; grid-template-columns: repeat(4, 1fr); }
 .tab {
-  height: 54px; background: var(--chassis); border: 0; border-right: var(--bw) solid var(--ink);
-  font-weight: 800; font-stretch: 110%; font-size: 1rem;
+  height: 54px; padding: 0 4px; background: var(--chassis); border: 0; border-right: var(--bw) solid var(--ink);
+  font-weight: 800; font-stretch: 105%; font-size: .98rem;
 }
 .tab:last-child { border-right: 0; }
 .tab[aria-selected="true"] { background: var(--slab); box-shadow: inset 0 -6px 0 var(--hot); }
+.crate-close {
+  display: none; place-items: center; width: 56px; flex: none;
+  background: var(--ink); color: var(--slab); border: 0; border-left: var(--bw) solid var(--ink);
+}
+.crate-close svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: square; }
+.crate-body { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; padding-bottom: 16px; }
 .search { display: flex; gap: 10px; padding: 16px 16px 4px; }
 .search input {
   flex: 1; min-width: 0; height: 48px; padding: 0 12px;
   border: var(--bw) solid var(--ink); background: var(--slab); color: var(--text);
 }
-.crate-head { padding: 14px 16px 0; display: grid; gap: 8px; justify-items: start; }
-.crate-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; }
-.crate-title { margin: 0; font-size: 1.35rem; font-weight: 900; font-stretch: 105%; line-height: 1.15; }
-.crate-note { margin: 0; padding: 8px 10px; background: var(--lcd); color: var(--lcd-ink); border: 2px solid var(--ink); font-size: .9rem; }
+.crate-back { margin: 14px 16px 0; }
+.page-head { display: flex; align-items: center; gap: 14px; padding: 14px 16px 4px; }
+.page-art { width: 72px; height: 72px; flex: none; object-fit: cover; border: var(--bw) solid var(--ink); background: var(--hot); }
+.page-text { flex: 1; min-width: 0; }
+.page-title { margin: 0; font-size: 1.4rem; font-weight: 900; font-stretch: 105%; line-height: 1.1; overflow-wrap: anywhere; }
+.page-sub { margin: 4px 0 0; font-size: .9rem; color: var(--muted); }
+.crate-note { margin: 10px 16px 0; padding: 8px 10px; background: var(--lcd); color: var(--lcd-ink); border: 2px solid var(--ink); font-size: .9rem; }
+.sec + .sec { border-top: 2px dashed color-mix(in srgb, var(--text) 30%, transparent); margin-top: 8px; }
+.sec-head { margin: 16px 16px 0; font-size: 1.1rem; font-weight: 900; font-stretch: 110%; line-height: 1.2; overflow-wrap: anywhere; }
+.sec-note { margin: 2px 16px 0; font-size: .85rem; color: var(--muted); }
 
 .list { list-style: none; margin: 0; padding: 8px 0; }
 .row {
@@ -283,15 +298,34 @@ input[type="range"]:disabled { opacity: .5; }
 .row-art {
   width: 44px; height: 44px; border: 2px solid var(--ink); background: var(--hot); object-fit: cover; display: block;
 }
+.row-art--round { border-radius: 50%; }
+.row:disabled { opacity: .45; cursor: not-allowed; }
 .row-text { min-width: 0; }
 .row-name, .row-sub { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-name { font-weight: 800; }
 .row-sub { font-size: .88rem; color: var(--muted); }
 .row.is-current .row-sub { color: inherit; opacity: .8; }
 .row-meta { font-family: var(--lcd-font); font-size: 20px; }
-.list-status { padding: 4px 16px 16px; color: var(--muted); }
+.list-status { margin: 0; padding: 8px 16px 8px; color: var(--muted); }
 .list-status:empty { display: none; }
-.chip--more { margin: 0 16px 20px; align-self: flex-start; }
+.chip--more { margin: 4px 16px 12px; }
+
+/* ---------- Player-only view: deck alone, library in a slide-out menu ---------- */
+.is-focus .layout { grid-template-columns: minmax(0, 620px); justify-content: center; }
+.is-focus .crate {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 40;
+  width: min(460px, 100vw); height: 100dvh; min-height: 0; max-height: none;
+  border-width: 0 0 0 var(--bw); box-shadow: -10px 0 0 var(--ink);
+  transform: translateX(calc(100% + 16px)); visibility: hidden;
+  transition: transform 240ms cubic-bezier(.2, .8, .2, 1), visibility 0s linear 240ms;
+}
+.is-focus.drawer-open .crate {
+  transform: none; visibility: visible;
+  transition: transform 240ms cubic-bezier(.2, .8, .2, 1), visibility 0s;
+}
+.is-focus .crate-close { display: grid; }
+.deck-browse { display: none; height: 56px; }
+.scrim { position: fixed; inset: 0; z-index: 35; background: rgba(0, 0, 0, .5); }
 
 /* ---------- Toast ---------- */
 .toast {
@@ -305,7 +339,7 @@ input[type="range"]:disabled { opacity: .5; }
 @media (max-width: 880px) {
   .layout { grid-template-columns: minmax(0, 1fr); gap: 24px; }
   .crate { min-height: 0; position: static; max-height: none; }
-  .crate .list { overflow: visible; }
+  body:not(.is-focus) .crate-body { overflow: visible; }
 }
 @media (max-width: 480px) {
   .app { padding: 12px 16px 32px; }
@@ -322,6 +356,20 @@ input[type="range"]:disabled { opacity: .5; }
   .who { display: none; }
   .wordmark { font-size: 1.3rem; }
   .speaker-menu { right: auto; left: 0; }
+  .tab { font-size: .9rem; font-stretch: 100%; }
+}
+/* Phones: the menu is a sheet that slides up from the bottom, within thumb reach. */
+@media (max-width: 600px) {
+  .is-focus .crate {
+    top: auto; left: 0; width: 100%; height: 88dvh;
+    border-width: var(--bw) 0 0; box-shadow: 0 -10px 0 var(--ink);
+    transform: translateY(calc(100% + 16px));
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .is-focus .deck-browse { display: inline-flex; }
+  .chip--browse { display: none; }
+  .topbar-right { gap: 8px; }
+  .topbar-right .chip { height: 34px; padding: 0 .6rem; font-size: .85rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -329,4 +377,5 @@ input[type="range"]:disabled { opacity: .5; }
   .lcd-scroll.is-marquee { padding-left: 0; }
   .c-tape { transition: none; }
   .key, .chip { transition: none; }
+  .is-focus .crate, .is-focus.drawer-open .crate { transition: none; }
 }

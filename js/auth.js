@@ -42,9 +42,20 @@ function save(json, previous) {
     // Spotify may or may not rotate the refresh token; keep the old one if none is returned.
     refresh_token: json.refresh_token || previous?.refresh_token,
     expires_at: Date.now() + json.expires_in * 1000,
+    // Permissions Spotify actually granted. Used to spot sign-ins from before a new permission was added.
+    scope: json.scope ?? previous?.scope ?? null,
   };
   localStorage.setItem(TOKEN_KEY, JSON.stringify(token));
   return token;
+}
+
+// True if the saved sign-in includes every permission in CONFIG.scopes.
+// Sign-ins saved before permissions were tracked count as missing, so they get a one-time re-sign-in prompt.
+export function hasAllScopes() {
+  const granted = load()?.scope;
+  if (!granted) return false;
+  const set = new Set(granted.split(' '));
+  return CONFIG.scopes.every((s) => set.has(s));
 }
 
 async function tokenRequest(body) {

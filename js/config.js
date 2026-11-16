@@ -20,6 +20,7 @@ export const CONFIG = {
     'user-read-email',            // required by the Web Playback SDK
     'user-read-private',          // required by the Web Playback SDK
     'user-read-playback-state',   // what's playing, devices
+    'user-read-recently-played',  // Home: recently played
     'user-modify-playback-state', // play, pause, skip, seek, transfer
     'user-library-read',          // Liked Songs, heart state
     'user-library-modify',        // heart / un-heart
